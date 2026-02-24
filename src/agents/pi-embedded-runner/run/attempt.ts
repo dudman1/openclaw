@@ -40,6 +40,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
+import { createLlmUsageLogger } from "../../llm-usage-logger.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { resolveDefaultModelForAgent } from "../../model-selection.js";
 import { createOllamaStreamFn, OLLAMA_NATIVE_BASE_URL } from "../../ollama-stream.js";
@@ -85,7 +86,7 @@ import {
   sanitizeSessionHistory,
   sanitizeToolsForGoogle,
 } from "../google.js";
-import { getDmHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
+import { limitHistoryTurns, resolveEffectiveHistoryLimit } from "../history.js";
 import { log } from "../logger.js";
 import { buildModelAliasLines } from "../model.js";
 import {
@@ -716,6 +717,14 @@ export async function runEmbeddedAttempt(
         modelApi: params.model.api,
         workspaceDir: params.workspaceDir,
       });
+      const llmUsageLogger = createLlmUsageLogger({
+        env: process.env,
+        runId: params.runId,
+        sessionId: activeSession.sessionId,
+        sessionKey: params.sessionKey,
+        provider: params.provider,
+        modelId: params.modelId,
+      });
 
       // Ollama native API: bypass SDK's streamSimple and use direct /api/chat calls
       // for reliable streaming + tool calling support (#11828).
@@ -806,6 +815,10 @@ export async function runEmbeddedAttempt(
           activeSession.agent.streamFn,
         );
       }
+      // Provider-agnostic usage + loop-detection logger (LLM_USAGE_DEBUG=1).
+      if (llmUsageLogger) {
+        activeSession.agent.streamFn = llmUsageLogger.wrapStreamFn(activeSession.agent.streamFn);
+      }
 
       try {
         const prior = await sanitizeSessionHistory({
@@ -828,7 +841,7 @@ export async function runEmbeddedAttempt(
           : validatedGemini;
         const truncated = limitHistoryTurns(
           validated,
-          getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
+          resolveEffectiveHistoryLimit(params.sessionKey, params.config),
         );
         // Re-run tool_use/tool_result pairing repair after truncation, since
         // limitHistoryTurns can orphan tool_result blocks by removing the
@@ -1347,6 +1360,23 @@ export async function runEmbeddedAttempt(
           .catch((err) => {
             log.warn(`llm_output hook failed: ${String(err)}`);
           });
+      }
+
+      // Record actual token usage when the logger is enabled.
+      if (llmUsageLogger) {
+        const usageTotals = getUsageTotals();
+        llmUsageLogger.recordUsage(
+          messagesSnapshot,
+          usageTotals
+            ? {
+                input: usageTotals.input ?? undefined,
+                output: usageTotals.output ?? undefined,
+                cacheRead: usageTotals.cacheRead ?? undefined,
+                cacheWrite: usageTotals.cacheWrite ?? undefined,
+              }
+            : undefined,
+          promptError,
+        );
       }
 
       return {

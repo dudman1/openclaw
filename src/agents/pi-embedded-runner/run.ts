@@ -513,6 +513,13 @@ export async function runEmbeddedPiAgent(
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
       let runLoopIterations = 0;
+      // Loop-breaker: detect consecutive retries that make no forward progress
+      // (same messagesSnapshot length). If triggered at this level, something is
+      // stuck in an auth or compaction retry loop that the attempt-level checker
+      // won't catch. This is separate from the llm-usage-logger's loop detection.
+      const MAX_NO_PROGRESS_ITERATIONS = 5;
+      let lastSnapshotLength = -1;
+      let noProgressStreak = 0;
       const maybeMarkAuthProfileFailure = async (failure: {
         profileId?: string;
         reason?: Parameters<typeof markAuthProfileFailure>[0]["reason"] | null;
@@ -636,6 +643,35 @@ export async function runEmbeddedPiAgent(
             sessionIdUsed,
             lastAssistant,
           } = attempt;
+          // No-progress loop-breaker: if the session hasn't grown in N consecutive
+          // retries, we're in an unproductive loop. Log LOOP_BREAK and bail out.
+          const currentSnapshotLength = attempt.messagesSnapshot?.length ?? 0;
+          if (currentSnapshotLength > 0 && currentSnapshotLength === lastSnapshotLength) {
+            noProgressStreak += 1;
+            if (noProgressStreak >= MAX_NO_PROGRESS_ITERATIONS) {
+              const loopMsg =
+                `LOOP_BREAK: session ${params.sessionKey ?? params.sessionId} made no ` +
+                `progress for ${noProgressStreak} consecutive attempts ` +
+                `(snapshot length stuck at ${currentSnapshotLength}). Stopping.`;
+              log.error(`[loop-breaker] ${loopMsg}`);
+              return {
+                payloads: [{ text: loopMsg, isError: true }],
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta: {
+                    sessionId: params.sessionId,
+                    provider,
+                    model: model.id,
+                  },
+                  error: { kind: "loop_break", message: loopMsg },
+                },
+              };
+            }
+          } else {
+            noProgressStreak = 0;
+            lastSnapshotLength = currentSnapshotLength;
+          }
+
           const lastAssistantUsage = normalizeUsage(lastAssistant?.usage as UsageLike);
           const attemptUsage = attempt.attemptUsage ?? lastAssistantUsage;
           mergeUsageIntoAccumulator(usageAccumulator, attemptUsage);

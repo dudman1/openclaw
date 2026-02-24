@@ -72,7 +72,15 @@ export function calculateMaxToolResultChars(contextWindowTokens: number): number
   const maxTokens = Math.floor(contextWindowTokens * MAX_TOOL_RESULT_CONTEXT_SHARE);
   // Rough conversion: ~4 chars per token on average
   const maxChars = maxTokens * 4;
-  return Math.min(maxChars, HARD_MAX_TOOL_RESULT_CHARS);
+  const derivedMax = Math.min(maxChars, HARD_MAX_TOOL_RESULT_CHARS);
+  // LLM_MAX_TOOL_RESULT_CHARS lets operators enforce a tighter ceiling without
+  // changing code (useful for cost control, e.g. set to 20000 for ~5k tokens).
+  const envRaw = process.env.LLM_MAX_TOOL_RESULT_CHARS?.trim();
+  const envCap = envRaw ? Number.parseInt(envRaw, 10) : undefined;
+  if (envCap && Number.isFinite(envCap) && envCap > 0) {
+    return Math.min(derivedMax, envCap);
+  }
+  return derivedMax;
 }
 
 /**

@@ -7,6 +7,7 @@ export {
   getDmHistoryLimitFromSessionKey,
   getHistoryLimitFromSessionKey,
   limitHistoryTurns,
+  resolveEffectiveHistoryLimit,
 } from "./pi-embedded-runner/history.js";
 export { resolveEmbeddedSessionLane } from "./pi-embedded-runner/lanes.js";
 export { runEmbeddedPiAgent } from "./pi-embedded-runner/run.js";

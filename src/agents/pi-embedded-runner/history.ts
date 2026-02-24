@@ -113,3 +113,24 @@ export function getHistoryLimitFromSessionKey(
  * Alias for backward compatibility.
  */
 export const getDmHistoryLimitFromSessionKey = getHistoryLimitFromSessionKey;
+
+/**
+ * Resolve the effective history limit for a session, applying the global
+ * LLM_MAX_HISTORY_TURNS env-var cap on top of the config-derived limit.
+ *
+ * Set LLM_MAX_HISTORY_TURNS=N (e.g. 30) to enforce a hard global ceiling
+ * without changing openclaw.json. This is an emergency cost-control knob —
+ * prefer setting historyLimit/dmHistoryLimit in your channel config.
+ */
+export function resolveEffectiveHistoryLimit(
+  sessionKey: string | undefined,
+  config: OpenClawConfig | undefined,
+): number | undefined {
+  const configLimit = getHistoryLimitFromSessionKey(sessionKey, config);
+  const envRaw = process.env.LLM_MAX_HISTORY_TURNS?.trim();
+  const envLimit = envRaw ? Number.parseInt(envRaw, 10) : undefined;
+  if (envLimit && Number.isFinite(envLimit) && envLimit > 0) {
+    return configLimit !== undefined ? Math.min(configLimit, envLimit) : envLimit;
+  }
+  return configLimit;
+}
